@@ -6,9 +6,6 @@
 #include <esp_sleep.h>
 #include <driver/rtc_io.h>
 #include <driver/usb_serial_jtag.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 
 TFT_eSPI tft = TFT_eSPI();
 Preferences prefs;
@@ -61,19 +58,6 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define DISPLAY_BUTTON_MS 20000UL   // Tastendruck: so lange bleibt es an
 #define DISPLAY_RESULT_MS 10000UL   // nach Pumpenende: Ergebnis so lange zeigen
 #define DISPLAY_BOOT_MS 30000UL     // nach dem Einschalten
-
-// --- WLAN / Shot-Meldung ---
-#define WIFI_SSID "MEIN_SSID"
-#define WIFI_PASS "MEIN_PASSWORT"
-#define SHOT_URL "https://example.com/shot"   // Ziel des POST
-#define SHOT_MIN_SEC 25
-#define SHOT_MAX_SEC 35
-#define WIFI_TIMEOUT_MS 10000
-
-// --- Display-Layouts: 0 = alles, 1 = nur grosse Zeit ---
-#define LAYOUT_COUNT 2
-#define CLICK_GAP_MS 500            // laenger Pause = Klickfolge zu Ende
-#define TIMER_RESULT_MS 1000UL      // Layout 1: so lange bleibt die Zeit nach Pumpenende
 
 #define PIN_BAT_VOLT 4
 #define BAT_INTERVAL_MS 5000
@@ -450,60 +434,6 @@ void blankDisplay() {
 
 
 // =====================================================
-// SHOT MELDEN (WLAN nur kurz an, sonst frisst es den Akku)
-// =====================================================
-
-bool sendShot(uint32_t sec) {
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT_MS) {
-    delay(100);
-  }
-
-  bool ok = false;
-
-  if (WiFi.status() == WL_CONNECTED) {
-
-    WiFiClientSecure client;
-    client.setInsecure();   // kein Zertifikat-Check - fuer http:// egal
-
-    HTTPClient http;
-    http.setTimeout(5000);
-
-    if (http.begin(client, SHOT_URL)) {
-
-      http.addHeader("Content-Type", "application/json");
-
-      String body = "{\"duration\":" + String(sec)
-                  + ",\"starts\":" + String(rtcStarts)
-                  + ",\"max_vib\":" + String(maxVibration, 3)
-                  + ",\"battery\":" + String(batVoltage, 2) + "}";
-
-      int code = http.POST(body);
-
-      Serial.print("POST -> ");
-      Serial.println(code);
-
-      ok = (code >= 200 && code < 300);
-      http.end();
-    }
-
-  } else {
-
-    Serial.println("WLAN nicht verbunden.");
-  }
-
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-
-  return ok;
-}
-
-
-// =====================================================
 // TIEFSCHLAF
 // =====================================================
 
@@ -832,10 +762,6 @@ void loop() {
     Serial.print("Durchgang beendet nach ");
     Serial.print(finalSec);
     Serial.println("s");
-
-    if (finalSec >= SHOT_MIN_SEC && finalSec <= SHOT_MAX_SEC) {
-      sendShot(finalSec);
-    }
 
     // Layout 1: Endzeit stehen lassen, dann ausblenden
     timerSec = finalSec;
