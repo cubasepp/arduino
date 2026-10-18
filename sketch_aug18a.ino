@@ -118,6 +118,7 @@ uint32_t lastDrawnTimer = 0xFFFFFFFF;
 int clickCount = 0;
 unsigned long lastClickMs = 0;
 
+bool backlightPending = false;     // Beleuchtung erst an, wenn das Bild fertig gezeichnet ist
 bool displayReady = false;
 bool displayOn = false;
 unsigned long displayUntilMs = 0;   // bis wann das Display an bleiben soll
@@ -370,6 +371,7 @@ void ensureDisplay() {
   }
 
   tft.init();
+  digitalWrite(PIN_LCD_BL, LOW);   // init() kann die Beleuchtung selbst einschalten
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
   tft.setTextDatum(TL_DATUM);
@@ -414,10 +416,22 @@ void wakeDisplay() {
   tft.writecommand(0x11);   // Sleep Out
   delay(120);
 
-  digitalWrite(PIN_LCD_BL, HIGH);
   displayOn = true;
 
   drawStaticScreen();
+
+  // Beleuchtung erst nach dem ersten kompletten Bild (siehe showBacklight),
+  // sonst blitzt kurz der alte Inhalt bzw. ein halb gezeichnetes Bild auf
+  backlightPending = true;
+}
+
+
+void showBacklight() {
+
+  if (backlightPending) {
+    digitalWrite(PIN_LCD_BL, HIGH);
+    backlightPending = false;
+  }
 }
 
 
@@ -428,6 +442,7 @@ void blankDisplay() {
   }
 
   digitalWrite(PIN_LCD_BL, LOW);
+  backlightPending = false;
 
   if (displayReady) {
     tft.writecommand(0x10);   // Sleep In - spart auch ohne Beleuchtung Strom
@@ -899,6 +914,7 @@ void loop() {
       lastDrawnState = st;
     }
 
+    showBacklight();
     return;
   }
 
@@ -1013,4 +1029,6 @@ void loop() {
     tft.fillRect(BAR_INNER_X + barWidth, BAR_INNER_Y,
                  BAR_INNER_W - barWidth, BAR_INNER_H, TFT_BLACK);
   }
+
+  showBacklight();
 }
