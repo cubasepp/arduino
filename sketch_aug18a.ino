@@ -70,6 +70,11 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define SHOT_MAX_SEC 35
 #define WIFI_TIMEOUT_MS 10000
 
+// --- Display-Layouts: 0 = alles, 1 = nur grosse Zeit ---
+#define LAYOUT_COUNT 2
+#define CLICK_GAP_MS 500            // laenger Pause = Klickfolge zu Ende
+#define TIMER_RESULT_MS 1000UL      // Layout 1: so lange bleibt die Zeit nach Pumpenende
+
 #define PIN_BAT_VOLT 4
 #define BAT_INTERVAL_MS 5000
 #define BAT_USB_VOLT 4.35
@@ -116,6 +121,12 @@ unsigned long lastSaveMs = 0;
 unsigned long btnDownSince = 0;
 bool longHandled = false;
 bool wakePress = false;
+
+uint8_t layout = 0;                 // wird im Flash gemerkt
+uint32_t timerSec = 0;              // Zeit, die Layout 1 anzeigt (bleibt nach Pumpenende stehen)
+uint32_t lastDrawnTimer = 0xFFFFFFFF;
+int clickCount = 0;
+unsigned long lastClickMs = 0;
 
 bool displayReady = false;
 bool displayOn = false;
@@ -384,6 +395,13 @@ void drawStaticScreen() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
+  lastDrawnTimer = 0xFFFFFFFF;
+
+  if (layout == 1) {
+    lastDrawnState = -1;
+    return;     // Layout 1 zeichnet alles selbst
+  }
+
   tft.setTextSize(2);
   tft.drawString("[B33]", 10, 5);
 
@@ -588,6 +606,8 @@ void setup() {
   maxVibration = prefs.getFloat("maxvib", 0);
   savedMax = maxVibration;
 
+  layout = prefs.getUChar("layout", 0) % LAYOUT_COUNT;
+
   if (!wokeFromSleep) {
     // Nach echtem Neustart die Zaehler aus dem Flash holen
     rtcTotalSec = prefs.getUInt("totalsec", 0);
@@ -719,14 +739,39 @@ void loop() {
 
     if (btnDownSince != 0 && !longHandled && !wakePress) {
 
-      maxVibration = 0;
-      prefs.putFloat("maxvib", 0);
-      savedMax = 0;
+      clickCount++;
+      lastClickMs = now;
     }
 
     btnDownSince = 0;
     longHandled = false;
     wakePress = false;
+  }
+
+
+  // ---------- Klicks auswerten ----------
+
+  if (!btnDown && clickCount > 0 && (now - lastClickMs > CLICK_GAP_MS)) {
+
+    if (clickCount >= 3) {
+
+      // 3x kurz: Layout wechseln
+      layout = (layout + 1) % LAYOUT_COUNT;
+      prefs.putUChar("layout", layout);
+      Serial.print("Layout ");
+      Serial.println(layout);
+
+      drawStaticScreen();
+
+    } else {
+
+      // 1-2x kurz: Maximum zuruecksetzen wie bisher
+      maxVibration = 0;
+      prefs.putFloat("maxvib", 0);
+      savedMax = 0;
+    }
+
+    clickCount = 0;
   }
 
 
@@ -772,6 +817,7 @@ void loop() {
   // Pumpe als aus gilt, bleibt die Anzeige stehen statt weiterzulaufen
   if (pumpRunning) {
     rtcRunSeconds = (lastAboveMs - runStartMs) / 1000;
+    timerSec = rtcRunSeconds;
   }
 
   if (wasRunning && !pumpRunning) {
@@ -789,6 +835,12 @@ void loop() {
 
     if (finalSec >= SHOT_MIN_SEC && finalSec <= SHOT_MAX_SEC) {
       sendShot(finalSec);
+    }
+
+    // Layout 1: Endzeit stehen lassen, dann ausblenden
+    timerSec = finalSec;
+    if (layout == 1) {
+      displayUntilMs = millis() + TIMER_RESULT_MS;
     }
   }
 
@@ -893,6 +945,30 @@ void loop() {
 
 
   // ---------- Zeichnen ----------
+
+  if (layout == 1) {
+
+    int st = pumpRunning ? 1 : 0;
+
+    if (timerSec != lastDrawnTimer || st != lastDrawnState) {
+
+      char buf[8];
+      sprintf(buf, "%02u:%02u", (timerSec / 60) % 100, timerSec % 60);
+
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(pumpRunning ? TFT_GREEN : TFT_WHITE, TFT_BLACK);
+      tft.setTextSize(2);
+      tft.setTextPadding(320);
+      tft.drawString(buf, 160, 85, 7);     // Font 7 = grosse 7-Segment-Ziffern
+      tft.setTextPadding(0);
+      tft.setTextDatum(TL_DATUM);
+
+      lastDrawnTimer = timerSec;
+      lastDrawnState = st;
+    }
+
+    return;
+  }
 
   int stateNow = pumpRunning ? 1 : 0;
 
