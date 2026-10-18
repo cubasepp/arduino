@@ -59,6 +59,12 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define DISPLAY_RESULT_MS 10000UL   // nach Pumpenende: Ergebnis so lange zeigen
 #define DISPLAY_BOOT_MS 30000UL     // nach dem Einschalten
 
+// --- Display-Layouts: 0 = nur grosse Zeit (Standard), 1 = alles ---
+#define LAYOUT_COUNT 2
+#define LAYOUT_TIMER 0
+#define CLICK_GAP_MS 500            // laenger Pause = Klickfolge zu Ende
+#define TIMER_RESULT_MS 1000UL      // Timer-Layout: so lange bleibt die Zeit nach Pumpenende
+
 #define PIN_BAT_VOLT 4
 #define BAT_INTERVAL_MS 5000
 #define BAT_USB_VOLT 4.35
@@ -107,7 +113,7 @@ bool longHandled = false;
 bool wakePress = false;
 
 uint8_t layout = 0;                 // wird im Flash gemerkt
-uint32_t timerSec = 0;              // Zeit, die Layout 1 anzeigt (bleibt nach Pumpenende stehen)
+uint32_t timerSec = 0;              // Zeit, die das Timer-Layout anzeigt (bleibt nach Pumpenende stehen)
 uint32_t lastDrawnTimer = 0xFFFFFFFF;
 int clickCount = 0;
 unsigned long lastClickMs = 0;
@@ -381,9 +387,9 @@ void drawStaticScreen() {
 
   lastDrawnTimer = 0xFFFFFFFF;
 
-  if (layout == 1) {
+  if (layout == LAYOUT_TIMER) {
     lastDrawnState = -1;
-    return;     // Layout 1 zeichnet alles selbst
+    return;     // Timer-Layout zeichnet alles selbst
   }
 
   tft.setTextSize(2);
@@ -763,9 +769,9 @@ void loop() {
     Serial.print(finalSec);
     Serial.println("s");
 
-    // Layout 1: Endzeit stehen lassen, dann ausblenden
+    // Timer-Layout: Endzeit stehen lassen, dann ausblenden
     timerSec = finalSec;
-    if (layout == 1) {
+    if (layout == LAYOUT_TIMER) {
       displayUntilMs = millis() + TIMER_RESULT_MS;
     }
   }
@@ -872,7 +878,7 @@ void loop() {
 
   // ---------- Zeichnen ----------
 
-  if (layout == 1) {
+  if (layout == LAYOUT_TIMER) {
 
     int st = pumpRunning ? 1 : 0;
 
