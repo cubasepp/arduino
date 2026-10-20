@@ -45,8 +45,11 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define MIN_THRESHOLD 0.05
 
 #define WINDOW_MS 100
-#define ON_TIME_MS 500
-#define GAP_MS 300
+// Die Pumpe vibriert dauerhaft, Klopfen/Stossen nur kurz. Je laenger die
+// Bestaetigung, desto robuster gegen Klopfen. Die Laufzeit zaehlt trotzdem
+// ab der ersten Vibration. Anpassen anhand der "Burst"-Zeilen im Serial Monitor.
+#define ON_TIME_MS 1500
+#define GAP_MS 200                  // so lange darf die Vibration aussetzen
 #define OFF_TIME_MS 3000
 
 #define CAL_MS 1000
@@ -102,6 +105,7 @@ uint32_t lastDrawnRunSec = 0xFFFFFFFF;
 uint32_t lastDrawnUptime = 0xFFFFFFFF;
 
 unsigned long aboveSince = 0;
+float burstPeak = 0;              // hoechster Wert des laufenden Ausschlags (nur Messung)
 unsigned long lastAboveMs = 0;
 unsigned long runStartMs = 0;
 
@@ -722,6 +726,11 @@ void loop() {
 
     if (aboveSince == 0) {
       aboveSince = now;
+      burstPeak = 0;
+    }
+
+    if (hfVibration > burstPeak) {
+      burstPeak = hfVibration;
     }
 
     if (!pumpRunning && (now - aboveSince >= ON_TIME_MS)) {
@@ -731,6 +740,20 @@ void loop() {
   } else {
 
     if (now - lastAboveMs > GAP_MS) {
+
+      // Messung: Ausschlag, der nicht lang genug war (z.B. Klopfen)
+      if (aboveSince != 0 && !pumpRunning) {
+        Serial.print("Burst verworfen: ");
+        Serial.print(lastAboveMs - aboveSince + WINDOW_MS);
+        Serial.print(" ms, Spitze ");
+        Serial.print(burstPeak, 3);
+        Serial.print("  (Schwelle ");
+        Serial.print(pumpThreshold, 3);
+        Serial.print(", noetig ");
+        Serial.print(ON_TIME_MS);
+        Serial.println(" ms)");
+      }
+
       aboveSince = 0;
     }
 
