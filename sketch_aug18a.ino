@@ -607,7 +607,13 @@ bool sendShot(uint32_t sec, float peak, float mean) {
       int code = http.POST(body);
 
       Serial.print("POST -> ");
-      Serial.println(code);
+      Serial.print(code);
+      if (code < 0) {
+        Serial.print(" (");
+        Serial.print(HTTPClient::errorToString(code));
+        Serial.print(")");
+      }
+      Serial.println();
 
       ok = (code >= 200 && code < 300);
       http.end();
@@ -622,6 +628,39 @@ bool sendShot(uint32_t sec, float peak, float mean) {
   WiFi.mode(WIFI_OFF);
 
   return ok;
+}
+
+
+// Nur testen, ob das WLAN klappt (kein POST)
+void wifiTest() {
+
+  Serial.print("WLAN-Test: verbinde mit ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT_MS) {
+    delay(100);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("verbunden nach ");
+    Serial.print(millis() - t0);
+    Serial.print(" ms, IP ");
+    Serial.print(WiFi.localIP());
+    Serial.print(", Signal ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+  } else {
+    Serial.print("NICHT verbunden (Status ");
+    Serial.print(WiFi.status());
+    Serial.println("). SSID/Passwort pruefen, nur 2,4 GHz, Reichweite.");
+  }
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
 }
 
 
@@ -839,6 +878,12 @@ void loop() {
     } else if (c == 'x') {
       prefs.putUInt("lgn", 0);
       Serial.println("Log geloescht.");
+    } else if (c == 'w') {
+      wifiTest();
+    } else if (c == 't') {
+      // Achtung: landet als echter Shot beim Server (28 s, Beispielwerte)
+      Serial.println("Test-POST mit Beispielwerten...");
+      sendShot(28, 0.5, 0.3);
     }
   }
 
