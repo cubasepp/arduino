@@ -69,8 +69,7 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 // --- WLAN / Shot-Meldung ---
 #define WIFI_SSID "MEIN_SSID"
 #define WIFI_PASS "MEIN_PASSWORT"
-#define SHOT_URL "https://staging.mv-web.net/webhooks/coffee_shots"   // Ziel des POST (Staging)
-// #define SHOT_URL "https://mv-web.net/webhooks/coffee_shots"          // Produktion
+#define SHOT_URL "https://mv-web.net/webhooks/coffee_shots"   // Ziel des POST
 #define SHOT_TOKEN "mvw_DEIN_TOKEN"   // geht als "Authorization: Bearer ..." raus - NICHT committen
 #define WIFI_TIMEOUT_MS 10000
 
