@@ -70,6 +70,8 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define WIFI_SSID "MEIN_SSID"
 #define WIFI_PASS "MEIN_PASSWORT"
 #define SHOT_URL "https://mv-web.net/webhooks/coffee_shots"   // Ziel des POST
+#define SHOT_API_HEADER "X-API-Key"   // Name des Headers, falls der Server einen anderen erwartet
+#define SHOT_API_KEY "DEIN_API_KEY"   // NICHT committen
 #define WIFI_TIMEOUT_MS 10000
 
 // --- Messlog im Flash (Ringpuffer, ueberlebt Tiefschlaf und Neustart) ---
@@ -594,6 +596,7 @@ bool sendShot(uint32_t sec, float peak, float mean) {
     if (http.begin(client, SHOT_URL)) {
 
       http.addHeader("Content-Type", "application/json");
+      http.addHeader(SHOT_API_HEADER, SHOT_API_KEY);
 
       String body = "{\"duration\":" + String(sec)
                   + ",\"starts\":" + String(rtcStarts)
