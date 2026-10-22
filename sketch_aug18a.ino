@@ -70,6 +70,7 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define WIFI_SSID "MEIN_SSID"
 #define WIFI_PASS "MEIN_PASSWORT"
 #define SHOT_URL "https://mv-web.net/webhooks/coffee_shots"   // Ziel des POST
+#define COFFEE_MASCHINE_ID "1"        // kommt als "coffee_maschine_id" in den Body
 #define SHOT_TOKEN "mvw_DEIN_TOKEN"   // geht als "Authorization: Bearer ..." raus - NICHT committen
 #define WIFI_TIMEOUT_MS 10000
 
@@ -597,7 +598,8 @@ bool sendShot(uint32_t sec, float peak, float mean) {
       http.addHeader("Content-Type", "application/json");
       http.addHeader("Authorization", String("Bearer ") + SHOT_TOKEN);
 
-      String body = "{\"duration\":" + String(sec)
+      String body = "{\"coffee_maschine_id\":\"" + String(COFFEE_MASCHINE_ID) + "\""
+                  + ",\"duration\":" + String(sec)
                   + ",\"starts\":" + String(rtcStarts)
                   + ",\"peak_vib\":" + String(peak, 3)
                   + ",\"mean_vib\":" + String(mean, 3)
