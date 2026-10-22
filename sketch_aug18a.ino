@@ -70,9 +70,10 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define WIFI_SSID "MEIN_SSID"
 #define WIFI_PASS "MEIN_PASSWORT"
 #define SHOT_URL "https://mv-web.net/webhooks/coffee_shots"   // Ziel des POST
-#define COFFEE_MASCHINE_ID "1"        // kommt als "coffee_maschine_id" in den Body
 #define SHOT_TOKEN "mvw_DEIN_TOKEN"   // geht als "Authorization: Bearer ..." raus - NICHT committen
+#define COFFEE_MACHINE_ID "1"        // kommt als "coffee_machine_id" in den Body
 #define WIFI_TIMEOUT_MS 10000
+#define SHOT_MIN_SEC 20             // kuerzere Durchgaenge (Spuelen etc.) nicht melden
 
 // --- Messlog im Flash (Ringpuffer, ueberlebt Tiefschlaf und Neustart) ---
 #define LOG_N 100
@@ -598,7 +599,7 @@ bool sendShot(uint32_t sec, float peak, float mean) {
       http.addHeader("Content-Type", "application/json");
       http.addHeader("Authorization", String("Bearer ") + SHOT_TOKEN);
 
-      String body = "{\"coffee_maschine_id\":\"" + String(COFFEE_MASCHINE_ID) + "\""
+      String body = "{\"coffee_machine_id\":\"" + String(COFFEE_MACHINE_ID) + "\""
                   + ",\"duration\":" + String(sec)
                   + ",\"starts\":" + String(rtcStarts)
                   + ",\"peak_vib\":" + String(peak, 3)
@@ -1068,7 +1069,9 @@ void loop() {
     Serial.print(finalSec);
     Serial.println("s");
 
-    sendShot(finalSec, runPeak, runN ? runSumHf / runN : 0);
+    if (finalSec >= SHOT_MIN_SEC) {
+      sendShot(finalSec, runPeak, runN ? runSumHf / runN : 0);
+    }
 
     // Timer-Layout: Endzeit stehen lassen, dann ausblenden
     timerSec = finalSec;
