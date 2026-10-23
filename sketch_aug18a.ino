@@ -1113,7 +1113,8 @@ void loop() {
       // nicht als Aussetzer werten - bestaetigt wird trotzdem erst, wenn
       // danach weiter Vibration kommt.
       prepareDisplay();
-      lastAboveMs = millis();
+      now = millis();          // sonst ist now aelter als lastAboveMs, und
+      lastAboveMs = now;       // now - lastAboveMs laeuft ueber (-> Tiefschlaf)
     }
 
   } else {
