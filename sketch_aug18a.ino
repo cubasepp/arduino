@@ -54,7 +54,18 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 // ab der ersten Vibration. Anpassen anhand der "Burst"-Zeilen im Serial Monitor.
 #define ON_TIME_MS 1500
 #define GAP_MS 200                  // so lange darf die Vibration aussetzen
+#define TIMER_HOLD_MS 300           // laengere Pause: Anzeige bleibt stehen statt weiterzuzaehlen
+#define PREPARE_MS 1000             // so lange Vibration: Display schon im Dunkeln hochfahren
+// So lange Ruhe, dann ist der Shot vorbei. Nicht laenger: Die E61 hat keine
+// Pumpenpause bei der Pre-Infusion, und eine laengere Frist wuerde Spuelen +
+// Shot oder Nachpumpen zusammenziehen. Kuerzer auch nicht: Mitten im Lauf
+// faellt die Vibration teils bis zu ~3 s unter die Schwelle.
 #define OFF_TIME_MS 3000
+
+// Vibrationspumpen brummen mit Netzfrequenz. Abgetastet wird im Takt des
+// Sensors (200 Hz), dann ist 50 Hz genau jede 4. Probe eine Periode.
+#define P50_TICK_US 5000
+#define P50_MAX_N 32
 
 #define CAL_MS 1000
 
@@ -84,7 +95,7 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
 #define LAYOUT_COUNT 2
 #define LAYOUT_TIMER 0
 #define CLICK_GAP_MS 500            // laenger Pause = Klickfolge zu Ende
-#define TIMER_RESULT_MS 1000UL      // Timer-Layout: so lange bleibt die Zeit nach Pumpenende
+#define TIMER_RESULT_MS 3000UL      // Timer-Layout: so lange bleibt die Zeit nach der letzten Vibration
 
 #define PIN_BAT_VOLT 4
 #define BAT_INTERVAL_MS 5000
@@ -107,6 +118,7 @@ RTC_DATA_ATTR uint32_t rtcStarts = 0;
 RTC_DATA_ATTR bool rtcWasSleeping = false;
 
 float hfVibration = 0;
+float p50 = 0;                    // Anteil der Vibration bei 50 Hz (0..1)
 float maxVibration = 0;
 float lastDrawnMax = -1;
 int percent = 0;
@@ -127,11 +139,15 @@ char displayReason = 'B';             // P=Pumpe, T=Taste, B=Boot, K=Kalibrierun
 bool sessionPumpRan = false;
 float runPeak = 0;
 double runSumHf = 0;
+double runSumP50 = 0;
 long runN = 0;
 unsigned long logDumpAt = 0;
 
 unsigned long aboveSince = 0;
 float burstPeak = 0;              // hoechster Wert des laufenden Ausschlags (nur Messung)
+double burstSumHf = 0;
+double burstSumP50 = 0;
+long burstN = 0;
 unsigned long lastAboveMs = 0;
 unsigned long runStartMs = 0;
 
@@ -143,7 +159,9 @@ bool longHandled = false;
 bool wakePress = false;
 
 uint8_t layout = 0;                 // wird im Flash gemerkt
-uint32_t timerSec = 0;              // Zeit, die das Timer-Layout anzeigt (bleibt nach Pumpenende stehen)
+// Zeit, die das Timer-Layout anzeigt - ueberlebt den Tiefschlaf, damit ein
+// Tastendruck den letzten Shot zeigt statt 0
+RTC_DATA_ATTR uint32_t timerSec = 0;
 uint32_t lastDrawnTimer = 0xFFFFFFFF;
 int clickCount = 0;
 unsigned long lastClickMs = 0;
@@ -151,6 +169,7 @@ unsigned long lastClickMs = 0;
 bool backlightPending = false;     // Beleuchtung erst an, wenn das Bild fertig gezeichnet ist
 bool displayReady = false;
 bool displayOn = false;
+bool panelAwake = false;           // Panel wach (ohne Licht) - dann ist wakeDisplay sofort fertig
 unsigned long displayUntilMs = 0;   // bis wann das Display an bleiben soll
 
 float batVoltage = 0;
@@ -233,7 +252,10 @@ struct LogRec {
   char type;         // W=Aufwachen  B=Ausschlag verworfen  P=Pumpe  D=Display
   char reason;
   uint16_t a, b, c, d;
+  uint16_t e;        // 50-Hz-Anteil*1000 (ab Log-Format 2, belegt das alte Fuellbyte)
 };
+
+#define LOG_VERSION 2
 
 
 uint16_t clamp16(long v) {
@@ -246,12 +268,13 @@ uint16_t milli(float v) {
 }
 
 
-void logEvent(char type, char reason, long a, long b, long c, long d) {
+void logEvent(char type, char reason, long a, long b, long c, long d, long e) {
 
   struct timeval tv;
   gettimeofday(&tv, NULL);
 
   LogRec r;
+  memset(&r, 0, sizeof(r));
   r.t = (uint32_t)tv.tv_sec;
   r.type = type;
   r.reason = reason;
@@ -259,6 +282,7 @@ void logEvent(char type, char reason, long a, long b, long c, long d) {
   r.b = clamp16(b);
   r.c = clamp16(c);
   r.d = clamp16(d);
+  r.e = clamp16(e);
 
   uint32_t n = prefs.getUInt("lgn", 0);
 
@@ -276,10 +300,11 @@ void dumpLog() {
   uint32_t first = (n > LOG_N) ? n - LOG_N : 0;
 
   Serial.println("--- LOG START ---");
-  Serial.println("nr,t_s,typ,grund,a,b,c,d");
-  Serial.println("W Aufwachen (grund S=Sensor T=Taste C=Kaltstart): a=Ausloeser mg, d=Schwelle*1000");
-  Serial.println("B Ausschlag verworfen: a=Dauer ms, b=Spitze*1000, d=Schwelle*1000");
-  Serial.println("P Pumpe gelaufen: a=Sekunden, b=Spitze*1000, c=Mittel*1000, d=Schwelle*1000");
+  Serial.println("nr,t_s,typ,grund,a,b,c,d,e");
+  Serial.println("e = 50-Hz-Anteil*1000 (Pumpe brummt mit 50 Hz: hoch = eher Pumpe)");
+  Serial.println("W Aufwachen (grund S=Sensor T=Taste C=Kaltstart): a=Ausloeser mg, d=Schwelle*1000, e=50Hz im 1. Fenster");
+  Serial.println("B Ausschlag verworfen: a=Dauer ms, b=Spitze*1000, c=Mittel*1000, d=Schwelle*1000, e=50Hz-Mittel");
+  Serial.println("P Pumpe gelaufen: a=Sekunden, b=Spitze*1000, c=Mittel*1000, d=Schwelle*1000, e=50Hz-Mittel");
   Serial.println("D Display war an (grund P=Pumpe T=Taste B=Boot K=Kalibrierung): a=Dauer in 0.1 s, b=Pumpe lief 1/0");
 
   for (uint32_t i = first; i < n; i++) {
@@ -292,11 +317,35 @@ void dumpLog() {
       continue;
     }
 
-    Serial.printf("%u,%u,%c,%c,%u,%u,%u,%u\n", (unsigned)i, (unsigned)r.t,
-                  r.type, r.reason, r.a, r.b, r.c, r.d);
+    Serial.printf("%u,%u,%c,%c,%u,%u,%u,%u,%u\n", (unsigned)i, (unsigned)r.t,
+                  r.type, r.reason, r.a, r.b, r.c, r.d, r.e);
   }
 
   Serial.println("--- LOG ENDE ---");
+}
+
+
+// Alle Plaetze roh ausgeben, unabhaengig vom Zaehler - holt nach 'x'
+// die alten Eintraege zurueck, solange sie nicht ueberschrieben sind
+void dumpLogRaw() {
+
+  Serial.println("--- LOG ROH START (platz,t_s,typ,grund,a,b,c,d,e - e bei alten Eintraegen Unsinn) ---");
+
+  for (uint32_t i = 0; i < LOG_N; i++) {
+
+    char key[8];
+    snprintf(key, sizeof(key), "lg%u", (unsigned)i);
+
+    LogRec r;
+    if (prefs.getBytes(key, &r, sizeof(r)) != sizeof(r)) {
+      continue;
+    }
+
+    Serial.printf("%u,%u,%c,%c,%u,%u,%u,%u,%u\n", (unsigned)i, (unsigned)r.t,
+                  r.type, r.reason, r.a, r.b, r.c, r.d, r.e);
+  }
+
+  Serial.println("--- LOG ROH ENDE ---");
 }
 
 
@@ -486,6 +535,21 @@ void ensureDisplay() {
   tft.setTextDatum(TL_DATUM);
 
   displayReady = true;
+  panelAwake = true;               // init() weckt das Panel mit auf
+}
+
+
+// Display hochfahren, aber dunkel lassen. Kostet einige 100 ms - deshalb
+// schon waehrend der Pumpenbestaetigung, damit das Bild danach sofort da ist.
+void prepareDisplay() {
+
+  ensureDisplay();
+
+  if (!panelAwake) {
+    tft.writecommand(0x11);   // Sleep Out
+    delay(120);
+    panelAwake = true;
+  }
 }
 
 
@@ -526,8 +590,7 @@ void wakeDisplay(char reason) {
   displayReason = reason;
   sessionPumpRan = false;
 
-  tft.writecommand(0x11);   // Sleep Out
-  delay(120);
+  prepareDisplay();
 
   displayOn = true;
 
@@ -559,12 +622,13 @@ void blankDisplay() {
 
   if (displayReady) {
     tft.writecommand(0x10);   // Sleep In - spart auch ohne Beleuchtung Strom
+    panelAwake = false;
   }
 
   displayOn = false;
 
   logEvent('D', displayReason, (millis() - displayOnSinceMs) / 100,
-           sessionPumpRan ? 1 : 0, 0, 0);
+           sessionPumpRan ? 1 : 0, 0, 0, 0);
 
   Serial.println("Display aus.");
 }
@@ -687,6 +751,12 @@ void goToDeepSleep() {
 
   blankDisplay();
 
+  // Vorbereitet, aber nie angezeigt (Fehlalarm): Panel trotzdem schlafen legen
+  if (panelAwake) {
+    tft.writecommand(0x10);
+    panelAwake = false;
+  }
+
   Serial.println("-> Tiefschlaf.");
   Serial.flush();
 
@@ -772,6 +842,12 @@ void setup() {
 
   layout = prefs.getUChar("layout", 0) % LAYOUT_COUNT;
 
+  // Altes Log-Format hatte kein Feld e - neu anfangen statt Unsinn anzeigen
+  if (prefs.getUChar("lgv", 1) != LOG_VERSION) {
+    prefs.putUInt("lgn", 0);
+    prefs.putUChar("lgv", LOG_VERSION);
+  }
+
   if (!wokeFromSleep) {
     // Nach echtem Neustart die Zaehler aus dem Flash holen
     rtcTotalSec = prefs.getUInt("totalsec", 0);
@@ -842,11 +918,21 @@ void loop() {
   double peakDev = 0;
   long samples = 0;
 
+  float p50Buf[P50_MAX_N];
+  int p50N = 0;
+  unsigned long nextTick = micros();
+
   float prev = readMagnitude();
 
   while (millis() - windowStart < WINDOW_MS) {
 
     float m = readMagnitude();
+
+    // Gleichmaessig im 5-ms-Takt mitschreiben fuer die 50-Hz-Auswertung
+    if ((long)(micros() - nextTick) >= 0 && p50N < P50_MAX_N) {
+      p50Buf[p50N++] = m;
+      nextTick += P50_TICK_US;
+    }
 
     double d = m - prev;
     sumSqHf += d * d;
@@ -863,6 +949,31 @@ void loop() {
   }
 
   hfVibration = sqrt(sumSqHf / samples);
+
+  // 50-Hz-Anteil: bei 200 Hz Abtastung ist die DFT-Basis einfach
+  // cos = 1,0,-1,0 und sin = 0,1,0,-1. Nur ganze Perioden (4 Proben) nehmen.
+  {
+    int n = p50N - (p50N % 4);
+    double mean = 0;
+    for (int i = 0; i < n; i++) mean += p50Buf[i];
+    mean = n ? mean / n : 0;
+
+    double re = 0, im = 0, var = 0;
+    for (int i = 0; i < n; i++) {
+      double x = p50Buf[i] - mean;
+      var += x * x;
+      switch (i & 3) {
+        case 0: re += x; break;
+        case 1: im += x; break;
+        case 2: re -= x; break;
+        case 3: im -= x; break;
+      }
+    }
+
+    // reiner 50-Hz-Sinus ergibt 1, Rauschen/Klopfen deutlich weniger
+    p50 = (var > 1e-9) ? (float)(2.0 * (re * re + im * im) / (n * var)) : 0;
+    if (p50 > 1) p50 = 1;
+  }
 
   // In mg umrechnen: die Weckschwelle zaehlt in Schritten zu 62,5 mg
   int peakMg = (int)(peakDev / 9.80665 * 1000.0);
@@ -881,6 +992,8 @@ void loop() {
     } else if (c == 'x') {
       prefs.putUInt("lgn", 0);
       Serial.println("Log geloescht.");
+    } else if (c == 'r') {
+      dumpLogRaw();
     } else if (c == 'w') {
       wifiTest();
     } else if (c == 't') {
@@ -981,14 +1094,26 @@ void loop() {
     if (aboveSince == 0) {
       aboveSince = now;
       burstPeak = 0;
+      burstSumHf = 0;
+      burstSumP50 = 0;
+      burstN = 0;
     }
 
     if (hfVibration > burstPeak) {
       burstPeak = hfVibration;
     }
+    burstSumHf += hfVibration;
+    burstSumP50 += p50;
+    burstN++;
 
     if (!pumpRunning && (now - aboveSince >= ON_TIME_MS)) {
       pumpRunning = true;
+    } else if (!pumpRunning && !panelAwake && (now - aboveSince >= PREPARE_MS)) {
+      // Blockiert einige 100 ms, in denen nicht gemessen wird. Die Zeit
+      // nicht als Aussetzer werten - bestaetigt wird trotzdem erst, wenn
+      // danach weiter Vibration kommt.
+      prepareDisplay();
+      lastAboveMs = millis();
     }
 
   } else {
@@ -1000,14 +1125,20 @@ void loop() {
 
         unsigned long burstMs = lastAboveMs - aboveSince + WINDOW_MS;
 
+        float bMean = burstN ? burstSumHf / burstN : 0;
+        float bP50 = burstN ? burstSumP50 / burstN : 0;
+
         if (burstMs >= LOG_MIN_BURST_MS) {
-          logEvent('B', '-', burstMs, milli(burstPeak), 0, milli(pumpThreshold));
+          logEvent('B', '-', burstMs, milli(burstPeak), milli(bMean),
+                   milli(pumpThreshold), milli(bP50));
         }
 
         Serial.print("Burst verworfen: ");
-        Serial.print(lastAboveMs - aboveSince + WINDOW_MS);
+        Serial.print(burstMs);
         Serial.print(" ms, Spitze ");
         Serial.print(burstPeak, 3);
+        Serial.print(", p50 ");
+        Serial.print(bP50, 2);
         Serial.print("  (Schwelle ");
         Serial.print(pumpThreshold, 3);
         Serial.print(", noetig ");
@@ -1032,24 +1163,36 @@ void loop() {
     runStartMs = aboveSince;
     rtcRunSeconds = 0;
 
+    // Die Bestaetigungszeit gehoert schon zum Durchgang
     runPeak = burstPeak;
-    runSumHf = 0;
-    runN = 0;
+    runSumHf = burstSumHf;
+    runSumP50 = burstSumP50;
+    runN = burstN;
   }
 
-  // Nur bis zur letzten echten Vibration zaehlen - in den 3 s, bis die
-  // Pumpe als aus gilt, bleibt die Anzeige stehen statt weiterzulaufen
+  // Die Anzeige laeuft gleichmaessig mit der Uhr - die Pumpe setzt gerade
+  // am Anfang oft kurz aus, das soll nicht ruckeln. Erst bei einer echten
+  // Pause bleibt sie stehen (in der Wartezeit, bis die Pumpe als aus gilt, also
+  // auch), und rueckwaerts springt sie nie.
   if (pumpRunning) {
-    rtcRunSeconds = (lastAboveMs - runStartMs) / 1000;
+    unsigned long endMs = (now - lastAboveMs <= TIMER_HOLD_MS) ? now : lastAboveMs;
+    // gerundet: Das Display erscheint erst nach der Bestaetigung (~1,5 s).
+    // Abgeschnitten stuende die erste Zahl nur eine halbe Sekunde da.
+    uint32_t sec = (endMs - runStartMs + 500) / 1000;
+    if (sec > rtcRunSeconds) {
+      rtcRunSeconds = sec;
+    }
     timerSec = rtcRunSeconds;
   }
 
-  // Messwerte des Durchgangs (nur Fenster mit echter Vibration)
-  if (pumpRunning && above) {
+  // Messwerte des Durchgangs (nur Fenster mit echter Vibration;
+  // im Bestaetigungsfenster sind sie schon ueber den Burst drin)
+  if (pumpRunning && wasRunning && above) {
     if (hfVibration > runPeak) {
       runPeak = hfVibration;
     }
     runSumHf += hfVibration;
+    runSumP50 += p50;
     runN++;
   }
 
@@ -1059,25 +1202,30 @@ void loop() {
     // letzten echten Vibration, nicht bis zum Ablauf der Abschaltfrist.
     uint32_t finalSec = (lastAboveMs - runStartMs) / 1000;
 
+    // Die Anzeige zaehlt bis zu TIMER_HOLD_MS ueber die letzte Vibration
+    // hinaus - das Ergebnis soll danach nicht zurueckspringen
+    if (rtcRunSeconds > finalSec) {
+      finalSec = rtcRunSeconds;
+    }
+
     rtcRunSeconds = 0;          // Anzeige sofort zuruecksetzen
     rtcTotalSec += finalSec;
 
     logEvent('P', '-', finalSec, milli(runPeak),
-             runN ? milli(runSumHf / runN) : 0, milli(pumpThreshold));
+             runN ? milli(runSumHf / runN) : 0, milli(pumpThreshold),
+             runN ? milli(runSumP50 / runN) : 0);
 
     Serial.print("Durchgang beendet nach ");
     Serial.print(finalSec);
-    Serial.println("s");
+    Serial.print("s, p50 ");
+    Serial.println(runN ? runSumP50 / runN : 0, 2);
 
     if (finalSec >= SHOT_MIN_SEC) {
       sendShot(finalSec, runPeak, runN ? runSumHf / runN : 0);
     }
 
-    // Timer-Layout: Endzeit stehen lassen, dann ausblenden
+    // Das Display ist hier meist schon aus (siehe Display an/aus)
     timerSec = finalSec;
-    if (layout == LAYOUT_TIMER) {
-      displayUntilMs = millis() + TIMER_RESULT_MS;
-    }
   }
 
 
@@ -1117,7 +1265,7 @@ void loop() {
     Serial.println(" mg)");
 
     logEvent('W', wokeFromSleep ? (wokeByButton ? 'T' : 'S') : 'C',
-             peakMg, 0, 0, milli(pumpThreshold));
+             peakMg, 0, 0, milli(pumpThreshold), milli(p50));
 
     logFirstWindow = false;
   }
@@ -1127,6 +1275,8 @@ void loop() {
 
     Serial.print("vib=");
     Serial.print(hfVibration, 4);
+    Serial.print("  p50=");
+    Serial.print(p50, 2);
     Serial.print("  thr=");
     Serial.print(pumpThreshold, 3);
     Serial.print("  lauf=");
@@ -1148,14 +1298,20 @@ void loop() {
     }
   }
 
-  // Solange die Pumpe laeuft, wird die Frist staendig nach vorne geschoben.
-  // Beim Abschalten laeuft sie dann genau DISPLAY_RESULT_MS spaeter ab -
-  // das ist die Zeit, in der du das Ergebnis siehst.
+  // Die Frist zaehlt ab der letzten echten Vibration, nicht ab dem Ende
+  // der Abschaltfrist. Laeuft die Pumpe in der Zeit wieder an, geht das
+  // Display wieder an.
   if (pumpRunning) {
 
-    displayUntilMs = now + DISPLAY_RESULT_MS;
+    unsigned long keepUntil = lastAboveMs
+                              + (layout == LAYOUT_TIMER ? TIMER_RESULT_MS : DISPLAY_RESULT_MS);
 
-    if (!displayOn) {
+    // eine laengere Frist (z.B. Tastendruck) nicht verkuerzen
+    if ((long)(keepUntil - displayUntilMs) > 0) {
+      displayUntilMs = keepUntil;
+    }
+
+    if (!displayOn && above) {
       wakeDisplay('P');
     }
 
